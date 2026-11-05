@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+*.docx
+*.pdf
+# fixtures transcribe a real form (personal data) - keep them out of git
+tests/fixtures/

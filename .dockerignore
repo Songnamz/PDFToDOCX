@@ -1,0 +1,5 @@
+tests
+*.docx
+*.pdf
+.env
+__pycache__

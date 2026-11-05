@@ -27,9 +27,16 @@ def _para_from(group: list[Line], page: Page, text: str | None = None) -> Para:
 
 
 def _map_underlines(p: Para):
-    """Underline x-ranges on each geometry line -> character ranges in p.text."""
-    if not any(l.underlines for l in p.lines):
-        return
+    """Underline / bold x-ranges on each geometry line -> character ranges in p.text."""
+    p.underline_ranges = _map_ranges(p, "underlines")
+    if not p.bold:
+        p.bold_ranges = _map_ranges(p, "bold_ranges")
+
+
+def _map_ranges(p: Para, attr: str) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    if not any(getattr(l, attr) for l in p.lines):
+        return out
     text = p.text
     ln0 = p.lines[0]
     parts = text.split("\t")
@@ -38,7 +45,7 @@ def _map_underlines(p: Para):
         acc = 0
         for part in parts:
             starts.append(acc); acc += len(part) + 1
-        for (ux0, ux1) in ln0.underlines:
+        for (ux0, ux1) in getattr(ln0, attr):
             for sg, part, st in zip(ln0.segs, parts, starts):
                 lo, hi = max(ux0, sg.x0), min(ux1, sg.x1)
                 if hi - lo > 4:
@@ -49,11 +56,11 @@ def _map_underlines(p: Para):
                     if a == st and lo - sg.x0 > len(part) and " " in part:   # underline starts after "๘. "
                         a = st + part.index(" ") + 1
                     if b > a:
-                        p.underline_ranges.append((a, b))
-        return
+                        out.append((a, b))
+        return out
     n = len(text)
     if n == 0:
-        return
+        return out
     widths = [max(1, l.x1 - l.x0) for l in p.lines]
     tot = sum(widths)
     starts, acc = [], 0
@@ -64,12 +71,13 @@ def _map_underlines(p: Para):
     for li, ln in enumerate(p.lines):
         c0, c1 = starts[li], starts[li + 1]
         span = max(1, ln.x1 - ln.x0)
-        for (ux0, ux1) in ln.underlines:
+        for (ux0, ux1) in getattr(ln, attr):
             a = c0 + int(round((ux0 - ln.x0) / span * (c1 - c0)))
             b = c0 + int(round((ux1 - ln.x0) / span * (c1 - c0)))
             a, b = _snap(text, a, b)
             if b > a:
-                p.underline_ranges.append((a, b))
+                out.append((a, b))
+    return out
 
 
 def _snap(text: str, a: int, b: int) -> tuple[int, int]:

@@ -92,17 +92,25 @@ Cloudflare Tunnel "main" ──► 127.0.0.1:8089 ──► pdftoword-nginx ─�
 
 ## Fonts
 
-`--font auto` (the default) uses the PDF's own font: digital PDFs name it; on scans every
-bundled family is fitted to the measured line pitch and line widths (TH SarabunPSK unless
-another font clearly fits better). The font is **embedded** in the .docx (regular + bold),
-so Word on Mac/Windows and LibreOffice show it even where it isn't installed.
+`--font auto` (the default) reproduces the PDF's own font **so it looks the same on every
+device**. The font is read from digital PDFs, or fitted on scans (every bundled family is
+tried against the measured line pitch and widths; TH SarabunPSK unless another fits better).
 
-Bundled: the Thai national fonts that may be redistributed (TH SarabunPSK, TH Sarabun New,
-TH Niramit AS, TH Krub, TH Kodchasal, TH K2D July8, TH Mali Grade 6, TH Chakra Petch,
-TH Baijam, TH KoHo, TH Fah kwang), from the official DIP/SIPA package; licenses in
-`thaidoc/fonts/LICENSES.txt`. Microsoft fonts (Angsana New, Cordia New, Tahoma) are used by
-name only. Apps that ignore embedded fonts (Apple Pages, Quick Look, Google Docs) substitute
-a wider Thai font; open the file in Word or LibreOffice for an exact match.
+The Thai national "TH" fonts are drawn very small for their point size: 16 pt TH SarabunPSK
+is as wide as ~10.5 pt of any normal Thai font. A device without the font (and Pages,
+Quick Look, Google Docs and phone viewers ignore fonts embedded in a .docx) substitutes a
+font ~1.5x wider and the layout falls apart. So `auto` writes the font's **portable twin**,
+Cadson Demak's Google Fonts version of the same design (TH SarabunPSK -> Sarabun,
+TH Niramit AS -> Niramit, ...), at the size that matches the PDF's text width, and embeds it:
+Word and LibreOffice show it exactly, Google Docs has it built in, and anywhere else the
+fallback font is within a few percent of the same width.
+
+`--font auto-exact` writes the original TH font itself (embedded; exact in Word/LibreOffice
+only). Any other `--font` name is used at the width-matched size.
+
+Bundled (all free to redistribute, licenses in `thaidoc/fonts/LICENSES.txt`): the Thai
+national fonts from the official DIP/SIPA package and their Google Fonts twins (OFL).
+Microsoft fonts (Angsana New, Cordia New, Tahoma) are used by name only.
 
 ## Web app features
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import io
+import math
 
 from docx import Document as Docx
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -65,6 +66,7 @@ class Writer:
         self.doc = doc
         self.font = font
         self.digits = digits
+        self.scale = getattr(doc, "font_scale", 1.0) or 1.0   # width-matched portable font
         self.d = Docx()
         self._pic_id = 100
         self._setup_styles()
@@ -79,14 +81,14 @@ class Writer:
     def _setup_styles(self):
         st = self.d.styles["Normal"]
         st.font.name = self.font
-        st.font.size = Pt(16)
+        st.font.size = Pt(self._sz(16))
         rpr = st.element.get_or_add_rPr()
         rf = rpr.find(qn("w:rFonts"))
         if rf is None:
             rf = _put(rpr, OxmlElement("w:rFonts"), _RPR_ORDER)
         for k in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
             rf.set(qn(k), self.font)
-        szcs = OxmlElement("w:szCs"); szcs.set(qn("w:val"), "32"); _put(rpr, szcs, _RPR_ORDER)
+        szcs = OxmlElement("w:szCs"); szcs.set(qn("w:val"), str(int(self._sz(16) * 2))); _put(rpr, szcs, _RPR_ORDER)
         lang = OxmlElement("w:lang"); lang.set(qn("w:val"), "en-US"); lang.set(qn("w:bidi"), "th-TH")
         _put(rpr, lang, _RPR_ORDER)
         pf = st.paragraph_format
@@ -101,7 +103,14 @@ class Writer:
             return to_arabic_digits(t)
         return t
 
+    def _sz(self, size: float) -> float:
+        if self.scale == 1.0:
+            return max(1.0, round(size * 2) / 2)              # Word sizes are half points
+        # width-matched font: round down so text is never wider than in the PDF
+        return max(1.0, math.floor(size * self.scale * 2 + 1e-6) / 2)
+
     def _run(self, para, text: str, size: float, bold: bool, underline: bool = False):
+        size = self._sz(size)
         r = para.add_run(self._txt(text))
         r.font.size = Pt(size)
         r.font.bold = bold or None
@@ -240,14 +249,19 @@ class Writer:
 
     def _runs(self, para, p: Para):
         text = p.text
-        marks = [False] * len(text)
+        n = len(text)
+        under = [False] * n
+        bold = [p.bold] * n
         for a, b in p.underline_ranges:
-            for i in range(max(0, a), min(len(text), b)):
-                marks[i] = True
+            for i in range(max(0, a), min(n, b)):
+                under[i] = True
+        for a, b in p.bold_ranges:
+            for i in range(max(0, a), min(n, b)):
+                bold[i] = True
         i = 0
-        while i < len(text):
+        while i < n:
             j = i
-            while j < len(text) and marks[j] == marks[i]:
+            while j < n and under[j] == under[i] and bold[j] == bold[i]:
                 j += 1
             chunk = text[i:j]
             for li, seg in enumerate(chunk.split("\n")):
@@ -257,7 +271,7 @@ class Writer:
                     if k:
                         para.add_run().add_tab()
                     if part:
-                        self._run(para, part, p.size_pt, p.bold, marks[i])
+                        self._run(para, part, p.size_pt, bold[i], under[i])
             i = j
 
     def _border_bottom(self, para):

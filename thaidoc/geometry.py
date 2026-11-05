@@ -22,6 +22,57 @@ def _binary(rgb: np.ndarray, thr: int = 150) -> np.ndarray:
     return (g < thr).astype(np.uint8)
 
 
+def _ridge_points(patch: np.ndarray, x_off: int, xh: float):
+    """(x positions, stroke thickness / x-height) of the strokes' centre-line pixels."""
+    if patch.size == 0 or patch.sum() < 20:
+        return None
+    p = np.pad(patch, 1)
+    dt = cv2.distanceTransform(p, cv2.DIST_L2, 3)
+    ridge = (dt >= cv2.dilate(dt, np.ones((3, 3), np.uint8))) & (p > 0)
+    ys, xs = np.nonzero(ridge)
+    return xs - 1 + x_off, 2 * dt[ys, xs] / max(1.0, xh)
+
+
+def _bold_runs(ridge, med_w: float, xh: float) -> tuple[list[tuple[int, int]], int]:
+    """(bold x-ranges, total width of windows that are clearly regular weight)."""
+    if ridge is None or not med_w or ridge[0].size == 0:
+        return [], 0
+    xs, ws = ridge
+    order = np.argsort(xs)
+    xs, ws = xs[order], ws[order]
+    win, step = max(4, int(xh * 1.6)), max(2, int(xh * 0.5))
+    runs: list[list[int]] = []
+    regular = 0
+    for a in range(int(xs[0]), int(xs[-1]) + 1, step):
+        lo, hi = np.searchsorted(xs, a), np.searchsorted(xs, a + win)
+        last = a + win >= xs[-1]
+        if hi - lo < win * 0.6 and not (last and hi - lo >= win * 0.25):
+            continue                         # too little ink in this window to judge
+        mw = float(np.median(ws[lo:hi]))
+        if mw < med_w * 1.1:
+            regular += step
+        if mw > med_w * 1.25:
+            s0, s1 = int(xs[lo]), int(xs[hi - 1]) if not last else int(xs[-1])
+            if runs and s0 - runs[-1][1] < xh:
+                runs[-1][1] = max(runs[-1][1], s1)
+            else:
+                runs.append([s0, s1])
+    return [(a, b) for a, b in runs if b - a > xh * 2], regular
+
+
+def _stroke_width(patch: np.ndarray) -> float | None:
+    """Typical stroke thickness in px: twice the distance-to-edge along the
+    strokes' centre lines. Independent of letter shapes (dense Thai digits are
+    not "bold"), unlike plain ink density."""
+    if patch.size == 0 or patch.sum() < 20:
+        return None
+    p = np.pad(patch, 1)
+    dt = cv2.distanceTransform(p, cv2.DIST_L2, 3)
+    ridge = (dt >= cv2.dilate(dt, np.ones((3, 3), np.uint8))) & (p > 0)
+    vals = dt[ridge]
+    return float(2 * np.median(vals)) if vals.size else None
+
+
 def detect_rules(rgb: np.ndarray, dpi: int):
     """Return (h_mask, v_mask) of long straight lines (scanned rules are often pale)."""
     b = _binary(rgb, 205)
@@ -299,10 +350,22 @@ def measure_lines(lines: list[Line], rgb: np.ndarray, dpi: int) -> tuple[float, 
         xh_list.append(xh)
         band = b[y0 + top:y0 + bot + 1, x0:x1]
         dens.append(band.mean() if band.size else 0)
+        ln._ridge = (y0, y1, x0, x1)   # type: ignore[attr-defined]   # measured once med_xh is known
         ln._xh = xh            # type: ignore[attr-defined]
         ln._dens = dens[-1]    # type: ignore[attr-defined]
     med_xh = statistics.median(xh_list) if xh_list else dpi * 0.1
     med_d = statistics.median(dens) if dens else 0.2
+    for ln in lines:
+        box = getattr(ln, "_ridge", None)
+        if box is not None:
+            xh_l = getattr(ln, "_xh", med_xh)
+            # small measured x-heights are mostly measurement noise: only bigger text
+            # (titles) is judged against its own size
+            xh_n = xh_l if xh_l / med_xh > 1.25 else med_xh
+            ln._xhn = xh_n   # type: ignore[attr-defined]
+            ln._ridge = _ridge_points(b[box[0]:box[1], box[2]:box[3]], box[2], xh_n)   # type: ignore[attr-defined]
+    allw = [r[1] for ln in lines if getattr(ln, "_ridge", None) is not None for r in [ln._ridge] if r[1].size]
+    med_w = float(np.median(np.concatenate(allw))) if allw else 0.0
     bases = sorted(ln.baseline for ln in lines)
     diffs = [b2 - b1 for b1, b2 in zip(bases, bases[1:]) if dpi * 0.15 < b2 - b1 < dpi * 0.5]
     pitch = statistics.median(diffs) if diffs else med_xh * 2.9
@@ -329,7 +392,16 @@ def measure_lines(lines: list[Line], rgb: np.ndarray, dpi: int) -> tuple[float, 
             ln.size_pt = body_pt
         else:
             ln.size_pt = round(body_pt * ratio * 2) / 2
-        ln.bold = getattr(ln, "_dens", med_d) > med_d * 1.28
+        # bold = thicker strokes than the page's text, measured in a window sliding
+        # along the line (Thai has no spaces, so word boxes don't show where bold ends)
+        ranges, regular = _bold_runs(getattr(ln, "_ridge", None), med_w, getattr(ln, "_xhn", med_xh))
+        span = max(1, ln.x1 - ln.x0)
+        covered = sum(b1 - a1 for a1, b1 in ranges)
+        rd = getattr(ln, "_ridge", None)
+        line_med = float(np.median(rd[1])) if rd is not None and rd[1].size else 0.0
+        ln.bold = covered > 0.75 * span or \
+            (med_w > 0 and line_med > med_w * 1.3 and regular < 0.15 * span)
+        ln.bold_ranges = [] if ln.bold else ranges
         segs: list[list[Word]] = [[ln.words[0]]]
         for prev, w in zip(ln.words, ln.words[1:]):
             blank = w.x0 - prev.x1 > gap_tab and \

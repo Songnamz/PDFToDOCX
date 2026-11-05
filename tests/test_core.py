@@ -67,3 +67,39 @@ def test_embedded_font_roundtrip():
     assert _obfuscate(data, key.group(2)) == families()["TH SarabunPSK"].files["Regular"].read_bytes()
     assert "embedTrueTypeFonts" in out.read("word/settings.xml").decode()
     assert 'Extension="odttf"' in out.read("[Content_Types].xml").decode()
+
+
+def test_split_over_cuts_thai_without_spaces():
+    from thaidoc.align import split_over
+    parts = split_over("- เป็นผู้มีคุณสมบัติครบถ้วนเลื่อนตำแหน่งสูงขึ้นตามหลักเกณฑ์ที่กำหนดหรือไม่ ☐ เป็น ☐ ไม่เป็น",
+                       ["- เป็นผู้มีคุณสมบัติครบถ้วนเลื่อนตําแหน่งสูงขึ้นตามหลักเกณฑ์", "ที่กําหนดหรือไม่| | เป็น | |ไม่เป็น"])
+    assert parts == ["- เป็นผู้มีคุณสมบัติครบถ้วนเลื่อนตำแหน่งสูงขึ้นตามหลักเกณฑ์", "ที่กำหนดหรือไม่ ☐ เป็น ☐ ไม่เป็น"]
+
+
+def test_table_cell_pieces_are_kept():
+    """VLM returns a cell in pieces; every piece ends up on its printed line."""
+    from thaidoc.align import fill_table_fuzzy
+    from thaidoc.model import Cell, Line, Seg, Table, Word
+    def line(t, y):
+        ln = Line([Word(t, 10, y - 30, 900, y, 90)], baseline=y); ln.segs = [Seg(t, 10, 900)]; return ln
+    c = Cell(0, 0, 0, 0, 1000, 300)
+    c.lines = [line("- ความถูกต้องเรียบร้อยของข้อมูล | | ถูกต้อง | | ไม่ถูกต้อง", 50),
+               line("- เป็นผู้มีคุณสมบัติครบถ้วนเลื่อนตําแหน่งสูงขึ้นตามหลักเกณฑ์", 120),
+               line("ที่กําหนดหรือไม่| | เป็น | |ไม่เป็น", 190)]
+    t = Table(0, 0, 1000, 300, [0, 1000], [0, 300], [c])
+    rows = [[{"text": "- ความถูกต้องเรียบร้อยของข้อมูล\n☐ ถูกต้อง ☐ ไม่ถูกต้อง\n"
+                      "- เป็นผู้มีคุณสมบัติครบถ้วนเลื่อนตำแหน่งสูงขึ้นตามหลักเกณฑ์ที่กำหนดหรือไม่ ☐ เป็น ☐ ไม่เป็น"}]]
+    assert fill_table_fuzzy(t, rows)
+    assert [l.text_override for l in c.lines] == [
+        "- ความถูกต้องเรียบร้อยของข้อมูล ☐ ถูกต้อง ☐ ไม่ถูกต้อง",
+        "- เป็นผู้มีคุณสมบัติครบถ้วนเลื่อนตำแหน่งสูงขึ้นตามหลักเกณฑ์",
+        "ที่กำหนดหรือไม่ ☐ เป็น ☐ ไม่เป็น"]
+
+
+def test_portable_twin_matches_width():
+    """TH fonts are written as their normal-proportion Google twin at the size that
+    gives the same text width, so a device without the font substitutes ~equal widths."""
+    from thaidoc.fontembed import portable
+    font, k = portable("TH SarabunPSK")
+    assert font == "Sarabun" and 0.62 < k < 0.72
+    assert portable("Angsana New") == ("Angsana New", 1.0)

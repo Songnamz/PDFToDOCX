@@ -121,6 +121,7 @@ def _run(job_id: str, opts: pipeline.Options):
             for m in pg.marks:
                 (d / f"mark_{m.id}.png").write_bytes(m.png)
         j.update(status="done", progress=1.0, message="Done", engine=doc.engine, font=doc.font,
+                 source_font=doc.source_font,
                  font_embedded=bool(fontembed.bundled(doc.font)),
                  warnings=doc.warnings, pages=_pages_info(doc))
     except Exception as e:  # noqa: BLE001
@@ -179,7 +180,7 @@ async def create_job(file: UploadFile = File(...), engine: str = Form("auto"),
         raise HTTPException(400, "Please upload a PDF file")
     if engine not in ("auto", "typhoon", "tesseract") or digits not in ("keep", "thai", "arabic"):
         raise HTTPException(400, "Bad option")
-    if font != "auto" and font not in fontembed.families() and font not in OTHER_FONTS:
+    if font not in ("auto", "auto-exact") and font not in fontembed.families() and font not in OTHER_FONTS:
         font = "auto"
     job_id = uuid.uuid4().hex
     d = ROOT / job_id
@@ -199,7 +200,8 @@ async def create_job(file: UploadFile = File(...), engine: str = Form("auto"),
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
     j = _job(job_id)
-    keys = ("status", "progress", "message", "name", "engine", "font", "font_embedded", "warnings", "pages")
+    keys = ("status", "progress", "message", "name", "engine", "font", "source_font", "font_embedded",
+            "warnings", "pages")
     out = {k: j.get(k) for k in keys}
     out["expires_in"] = max(0, int(TTL - (time.time() - j["created"])))
     return JSONResponse(out)

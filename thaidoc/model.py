@@ -34,6 +34,7 @@ class Line:
     bold: bool = False
     segs: list[Seg] = field(default_factory=list)
     underlines: list[tuple[int, int]] = field(default_factory=list)  # x-ranges
+    bold_ranges: list[tuple[int, int]] = field(default_factory=list)  # x-ranges of bold words
     text_override: Optional[str] = None  # better text from a VLM engine
     ink_x0: Optional[int] = None         # true left/right edge measured from the image
     ink_x1: Optional[int] = None
@@ -83,6 +84,7 @@ class Para:
     size_pt: float = 16.0
     bold: bool = False
     underline_ranges: list[tuple[int, int]] = field(default_factory=list)  # char ranges
+    bold_ranges: list[tuple[int, int]] = field(default_factory=list)       # char ranges
     page_break_before: bool = False
     rule_below: bool = False           # horizontal rule drawn under the paragraph
     space_before_px: float = 0.0
@@ -164,6 +166,8 @@ class Page:
 @dataclass
 class Document:
     pages: list[Page]
-    font: str = "TH SarabunPSK"
+    font: str = "TH SarabunPSK"     # font written to the .docx
     engine: str = ""
+    source_font: str = ""           # font found in / fitted to the PDF
+    font_scale: float = 1.0         # point-size factor (width-matched portable twin)
     warnings: list[str] = field(default_factory=list)

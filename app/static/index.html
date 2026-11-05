@@ -93,9 +93,10 @@
       <div>
         <label>ฟอนต์ในไฟล์ Word</label>
         <select id="font">
-          <option value="auto">ตามต้นฉบับ PDF (Auto)</option>
+          <option value="auto">ตามต้นฉบับ PDF · เปิดได้ทุกอุปกรณ์ (แนะนำ)</option>
+          <option value="auto-exact">ตามต้นฉบับ PDF · ฟอนต์ TH เดิม (Word / LibreOffice)</option>
         </select>
-        <div class="muted">ฝังฟอนต์ไว้ในไฟล์ เปิดเครื่องไหนก็แสดงผลเหมือนกัน</div>
+        <div class="muted" id="fontNote">ใช้ฟอนต์แบบเดียวกับต้นฉบับ ขนาดตรงกัน แสดงผลเหมือนกันทั้ง Mac, Windows, มือถือ, Pages และ Google Docs</div>
       </div>
       <div>
         <label>ตัวเลข</label>
@@ -200,7 +201,9 @@ async function poll() {
   if (info.status === 'error') { fail(info.message); return; }
   if (info.status !== 'done') { setState(info.status === 'queued' ? 'รอคิว' : 'กำลังแปลง'); timer = setTimeout(poll, 900); return; }
   setState('เสร็จแล้ว · ' + (info.engine || ''), '');
-  $('#msg').textContent = info.font ? 'ฟอนต์: ' + info.font + (info.font_embedded ? ' (ฝังในไฟล์แล้ว)' : ' (ไม่ได้ฝังในไฟล์)') : '';
+  $('#msg').textContent = !info.font ? '' : 'ฟอนต์: ' + info.font
+    + (info.source_font && info.source_font !== info.font ? ' (แบบเดียวกับ ' + info.source_font + ' ในต้นฉบับ)' : '')
+    + (info.font_embedded ? ' · ฝังในไฟล์แล้ว' : ' · ไม่ได้ฝังในไฟล์');
   $('#dl').disabled = false; render();
 }
 

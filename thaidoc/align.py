@@ -30,63 +30,92 @@ def _contains(big: str, small: str) -> float:
     return fuzz.partial_ratio(ks, kb) if len(ks) <= len(kb) else 0.0
 
 
+def _digits(t: str) -> str:
+    from .thai_text import to_arabic_digits
+    return "".join(c for c in to_arabic_digits(t) if c.isdigit())
+
+
+def _ltext(l: Line) -> str:
+    t = getattr(l, "_text_cache", None)
+    if t is None:
+        t = l.text()
+        l._text_cache = t   # type: ignore[attr-defined]
+    return t
+
+
+def _pair_score(u: Unit, group: list[Line]) -> float:
+    """How well a VLM unit fits a run of geometry lines (0-100)."""
+    strong = [l for l in group if not getattr(l, "_weak", False)]
+    if not strong:                                   # all unreadable to Tesseract
+        return 56.0 if len(group) == 1 else 0.0
+    text = " ".join(_ltext(l) for l in strong)
+    s = _sim(u.text, text)
+    if len(group) == 1:
+        s = max(s, 0.85 * _contains(text, u.text))   # Tesseract line = unit + noise
+    du, dl = _digits(u.text), _digits(text)
+    if du and du == dl:
+        s += 3                                       # list items differing only in digits
+    return s
+
+
 def align_body(lines: list[Line], units: list[Unit], pitch: float = 60) -> list[tuple[Unit | None, list[Line]]]:
     """Return groups (unit, lines). unit=None -> keep Tesseract text for those lines.
 
-    Weak lines (unreadable to Tesseract) match any unit with a lower threshold;
-    units that match nothing are inserted on a synthetic line after the
-    previous group, so no VLM text is ever lost.
+    Order-preserving global alignment (dynamic programming): every unit takes
+    0 or 1-4 consecutive lines (a wrapped paragraph), lines may stay unmatched,
+    and the pairing with the best total fit wins. Greedy matching fails on
+    lists whose items differ only in digits when Tesseract garbles some of them.
+    Units that match nothing go on a synthetic line after the previous group,
+    so no VLM text is ever lost.
     """
+    n, m = len(lines), len(units)
+    MIN, MAXK = 55.0, 12
+    NEG = float("-inf")
+    best = [[NEG] * (n + 1) for _ in range(m + 1)]
+    back: list[list[tuple | None]] = [[None] * (n + 1) for _ in range(m + 1)]
+    best[0][0] = 0.0
+    for i in range(m + 1):
+        for j in range(n + 1):
+            v = best[i][j]
+            if v == NEG:
+                continue
+            if j < n and v > best[i][j + 1]:                 # line keeps Tesseract text
+                best[i][j + 1], back[i][j + 1] = v, ("line", i, j)
+            if i < m and v > best[i + 1][j]:                 # unit unmatched -> synthetic
+                best[i + 1][j], back[i + 1][j] = v, ("unit", i, j)
+            if i < m:
+                for k in range(1, MAXK + 1):
+                    if j + k > n:
+                        break
+                    grp = lines[j:j + k]
+                    if k > 1 and grp[-1].baseline - grp[-2].baseline > pitch * 1.6:
+                        break
+                    sc = _pair_score(units[i], grp)
+                    if sc < MIN:
+                        continue
+                    nv = v + (sc - MIN) - 2 * (k - 1)        # joining lines must pay off
+                    if nv > best[i + 1][j + k]:
+                        best[i + 1][j + k], back[i + 1][j + k] = nv, ("pair", i, j, k)
+    steps = []
+    i, j = m, n
+    while (i, j) != (0, 0):
+        st = back[i][j]
+        steps.append(st)
+        if st[0] == "line":
+            j -= 1
+        elif st[0] == "unit":
+            i -= 1
+        else:
+            i, j = i - 1, j - st[3]
     groups: list[tuple[Unit | None, list[Line]]] = []
-    j = 0
-    used_units = set()
-    for ui, u in enumerate(units):
-        if j >= len(lines):
-            groups.append((u, [_synthetic(groups, pitch)]))
-            continue
-        scores = []
-        for k in range(j, min(len(lines), j + 8)):
-            s = max(_sim(u.text, lines[k].text()), _contains(u.text, lines[k].text()) * 0.9)
-            if getattr(lines[k], "_weak", False):
-                s = max(s, 56.0 if k == j else 0.0)   # unreadable line right here: take it
-            scores.append((k, s))
-        top = max((s for _, s in scores), default=0.0)
-        # near-identical lines (lists) are resolved by reading order: earliest good match
-        best_k, best = next(((k, s) for k, s in scores if s >= max(55.0, top - 10)), (-1, 0.0))
-        if scores and scores[0][1] >= 58 and scores[0][1] >= top - 22:
-            best_k, best = scores[0]          # the very next line is a fair match: keep order
-        if best < 55:
-            groups.append((u, [_synthetic(groups, pitch)]))
-            continue
-        # unmatched geometry lines before the match keep their own text
-        for k in range(j, best_k):
-            groups.append((None, [lines[k]]))
-        group = [lines[best_k]]
-        k = best_k + 1
-        # absorb following lines that are part of the same (wrapped) paragraph
-        while k < len(lines):
-            nxt = k
-            while nxt < len(lines) and getattr(lines[nxt], "_weak", False):
-                nxt += 1           # skip noise between wrapped lines
-            if nxt >= len(lines):
-                break
-            cand = lines[nxt]
-            if cand.baseline - group[-1].baseline > pitch * 1.6:
-                break
-            joined = " ".join(l.text() for l in group + [cand])
-            s_new = _sim(u.text, joined)
-            s_old = _sim(u.text, " ".join(l.text() for l in group))
-            c = _contains(u.text, cand.text())
-            if (s_new > s_old + 2 and c > 70) or (s_new >= s_old - 1 and c >= 88):
-                group.append(cand)
-                k = nxt + 1
-            else:
-                break
-        groups.append((u, group))
-        used_units.add(ui)
-        j = k
-    for k in range(j, len(lines)):
-        groups.append((None, [lines[k]]))
+    for st in reversed(steps):
+        if st[0] == "line":
+            groups.append((None, [lines[st[2]]]))
+        elif st[0] == "unit":
+            groups.append((units[st[1]], [_synthetic(groups, pitch)]))
+        else:
+            _, ui, lj, k = st
+            groups.append((units[ui], lines[lj:lj + k]))
     return _resolve_synthetic(groups)
 
 
@@ -111,7 +140,7 @@ def _resolve_synthetic(groups: list[tuple[Unit | None, list[Line]]]):
         if not ru:
             continue
         dup = any(gi != si and gi not in drop and u2 is not None and fuzz.ratio(ru, _raw(u2.text)) >= 92
-                  for gi, (u2, _g) in enumerate(groups))
+                  and _digits(u.text) == _digits(u2.text) for gi, (u2, _g) in enumerate(groups))
         if dup:
             drop.add(si)
             continue
@@ -145,7 +174,30 @@ def _resolve_synthetic(groups: list[tuple[Unit | None, list[Line]]]):
                 drop.add(si)                  # the displaced unit was just a piece of this one
             else:
                 groups[si] = (u2, grp)
-    return [g for i, g in enumerate(groups) if i not in drop]
+    groups = [g for i, g in enumerate(groups) if i not in drop]
+    return _absorb_next_lines(groups)
+
+
+def _absorb_next_lines(groups):
+    """A VLM unit matched to one line that also holds the text of the next,
+    unmatched line (e.g. a two-line title returned as one line) takes it over,
+    instead of that line showing Tesseract's misreading as a duplicate."""
+    out = []
+    for u, grp in groups:
+        if out and u is None and out[-1][0] is not None and len(grp) == 1 \
+                and not getattr(grp[0], "_synthetic", False):
+            pu, pg = out[-1]
+            if not getattr(pg[-1], "_synthetic", False):
+                gap = grp[0].baseline - pg[-1].baseline
+                pitch = max(1, pg[-1].y1 - pg[-1].y0) * 1.9
+                old = _sim(pu.text, " ".join(l.text() for l in pg))
+                new = _sim(pu.text, " ".join(l.text() for l in pg + grp))
+                if 0 < gap < pitch * 1.6 and new > old + 5 and \
+                        split_over(pu.text, [" ".join(l.text() for l in pg), grp[0].text()]):
+                    out[-1] = (pu, pg + grp)
+                    continue
+        out.append((u, grp))
+    return out
 
 
 def _split_to_segs(text: str, gsegs: list[Seg]) -> list[str] | None:
@@ -201,7 +253,18 @@ def apply_unit(u: Unit, group: list[Line]):
             first.segs = [Seg(" ".join(u.segs), gs[0].x0, gs[-1].x1)]
         first.text_override = "\t".join(s.text for s in first.segs)
     else:
-        first.text_override = u.text
+        first.text_override = _bullet(u.text, first)
+
+
+def _bullet(text: str, line: Line) -> str:
+    """Typhoon writes list bullets as Markdown "* "; print what the page shows."""
+    import re
+    m = re.match(r"^[*•]\s+", text)
+    if not m:
+        return text
+    seen = line.text().lstrip()
+    mark = "-" if seen[:1] in "-–—=~" else "•"
+    return mark + " " + text[m.end():]
 
 
 def fill_table(t: Table, rows: list[list[dict]] | None) -> bool:
@@ -252,6 +315,20 @@ def fill_table_fuzzy(t: Table, rows: list[list[dict]] | None) -> bool:
     if len(got) < max(1, 0.4 * len(glines)):
         return False
     texts = {gi: vlm[vi] for gi, vi in got.items()}
+    # a cell the VLM split into pieces ("- ความถูกต้อง..." / "☐ ถูกต้อง ☐ ไม่ถูกต้อง"):
+    # a piece that won no line of its own joins the line that printed it
+    for vi, v in enumerate(vlm):
+        if vi in used_v or not match_key(v):
+            continue
+        cands = [(fuzz.partial_ratio(match_key(v), match_key(glines[gi].text())), gi) for gi in texts]
+        cands = [c for c in cands if c[0] >= 80 and _contains(texts[c[1]], v) < 80]
+        if cands:
+            gi = max(cands)[1]
+            kg, kv = match_key(glines[gi].text()), match_key(v)
+            pos = fuzz.partial_ratio_alignment(kv, kg)
+            at_end = pos is not None and pos.dest_start > len(kg) / 3
+            texts[gi] = (texts[gi] + " " + v) if at_end else (v + " " + texts[gi])
+            used_v.add(vi)
     # one VLM line often covers two printed lines of a cell: split it between them
     for c in t.cells:
         cl = sorted((gi for gi, g in enumerate(glines) if any(g is l for l in c.lines)),
@@ -289,18 +366,25 @@ def fill_table_fuzzy(t: Table, rows: list[list[dict]] | None) -> bool:
     return True
 
 
+_THAI_MARKS = set("\u0e31\u0e34\u0e35\u0e36\u0e37\u0e38\u0e39\u0e3a\u0e47\u0e48\u0e49\u0e4a\u0e4b\u0e4c\u0e4d\u0e4e"
+                  "\u0e30\u0e32\u0e33\u0e45")
+
+
 def split_over(text: str, refs: list[str]) -> list[str] | None:
-    """Split text at spaces into len(refs) pieces, each as close as possible to
-    its reference (what Tesseract read on that printed line)."""
+    """Split text into len(refs) pieces, each as close as possible to its
+    reference (what Tesseract read on that printed line). Thai is often
+    written without spaces, so any character boundary may be a cut (spaces
+    preferred); never inside a syllable's marks."""
     out, rest = [], text
     for k in range(len(refs) - 1):
         tail = " ".join(refs[k + 1:])
-        cuts = [i for i, ch in enumerate(rest) if ch == " "]
+        cuts = [i for i in range(1, len(rest)) if rest[i] not in _THAI_MARKS and rest[i - 1] not in "\u0e40\u0e41\u0e42\u0e43\u0e44"]
         if not cuts:
             return None
-        cut = max(cuts, key=lambda i: _sim(rest[:i], refs[k]) + _sim(rest[i + 1:], tail))
+        cut = max(cuts, key=lambda i: _sim(rest[:i], refs[k]) + _sim(rest[i:], tail)
+                  + (3 if rest[i] == " " or rest[i - 1] == " " else 0))
         out.append(rest[:cut].strip())
-        rest = rest[cut + 1:]
+        rest = rest[cut:]
     out.append(rest.strip())
     if not all(out) or any(_sim(o, r) < 45 for o, r in zip(out, refs)):
         return None

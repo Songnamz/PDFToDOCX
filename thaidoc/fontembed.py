@@ -79,6 +79,42 @@ def bundled(name: str) -> str | None:
     return None
 
 
+# Portable twins: Cadson Demak's Google Fonts versions of the Thai national fonts.
+# The TH originals are drawn very small for their point size (16 pt TH SarabunPSK is
+# as wide as ~10.5 pt in any normal Thai font), so on a device that lacks them -
+# and Pages, Quick Look, Google Docs and phone viewers ignore embedded fonts - the
+# substitute is ~1.5x wider and the layout falls apart. The twins have normal
+# proportions: set at the width-matched size they look like the PDF, Google Docs
+# has them built in, and any fallback font is within a few percent.
+PORTABLE = {
+    "TH SarabunPSK": "Sarabun", "TH Sarabun New": "Sarabun", "TH Niramit AS": "Niramit",
+    "TH Krub": "Krub", "TH Kodchasal": "Kodchasan", "TH K2D July8": "K2D",
+    "TH Mali Grade 6": "Mali", "TH Chakra Petch": "Chakra Petch", "TH Baijam": "Bai Jamjuree",
+    "TH KoHo": "KoHo", "TH Fah kwang": "Fahkwang",
+}
+_SAMPLE = ("๒. ตำแหน่งปัจจุบัน : ผู้บังคับหมวด (สบ ๑) ฝ่ายปกครองและการฝึก ศูนย์ฝึกอบรมตำรวจภูธรภาค ๑ "
+           "เลื่อนทั้งปี ๑.๕ ขั้น จำนวน ๗ ครั้ง Report 2026")
+
+
+@lru_cache(maxsize=64)
+def width_ratio(src: str, dst: str) -> float:
+    """Point-size factor that makes `dst` text as wide as `src` text."""
+    from PIL import ImageFont
+    fs = families()
+    if src not in fs or dst not in fs or "Regular" not in fs[src].files or "Regular" not in fs[dst].files:
+        return 1.0
+    w = [ImageFont.truetype(str(fs[f].files["Regular"]), 200).getlength(_SAMPLE) for f in (src, dst)]
+    return w[0] / w[1] if w[1] else 1.0
+
+
+def portable(src: str) -> tuple[str, float]:
+    """(font to write, size factor) that reproduces `src` on every device."""
+    dst = PORTABLE.get(src)
+    if dst and dst in families():
+        return dst, width_ratio(src, dst)
+    return src, 1.0
+
+
 # PostScript names found in Thai PDFs -> the family name Word uses
 _KNOWN = {
     "thsarabunpsk": "TH SarabunPSK", "thsarabun": "TH SarabunPSK",

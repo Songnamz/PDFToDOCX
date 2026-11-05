@@ -23,7 +23,9 @@ class Options:
     dpi: int = 250
     keep_ink: bool = True
     ink: ink.InkOptions = field(default_factory=ink.InkOptions)
-    font: str = "auto"              # auto = the PDF's own font, or a font name
+    font: str = "auto"              # auto = the PDF's font via its portable twin (every device)
+                                    # auto-exact = the PDF's font itself (Word/LibreOffice)
+                                    # or a font name
     digits: str = "keep"            # keep | thai | arabic
     tess_lang: str = "tha+eng"
     max_pages: int = 60
@@ -159,7 +161,7 @@ def render(doc: Document, opts: Options) -> bytes:
 
 def _choose_font(doc: Document, opts: Options, pdf_fonts: dict[str, int]):
     """Use the PDF's own font (named in digital PDFs, fitted on scans)."""
-    if opts.font != "auto":
+    if opts.font not in ("auto", "auto-exact"):
         doc.font = fontembed.bundled(opts.font) or opts.font
     elif pdf_fonts:
         # weight by family: "X-Bold" and "X" count together
@@ -192,9 +194,28 @@ def _choose_font(doc: Document, opts: Options, pdf_fonts: dict[str, int]):
                 for q in paras:
                     if q.lines:
                         q.size_pt = round(q.size_pt * k * 2) / 2
+    if opts.font in ("auto", "auto-exact"):
+        doc.source_font = doc.font
+        if opts.font == "auto":
+            doc.font, doc.font_scale = fontembed.portable(doc.font)
+    else:
+        # a chosen font is set at the size that matches the PDF's text width
+        src = _detected_font(doc, pdf_fonts)
+        doc.source_font = src
+        doc.font_scale = fontembed.width_ratio(src, doc.font) if fontembed.bundled(doc.font) else 1.0
     if not fontembed.bundled(doc.font):
         doc.warnings.append(f"Font '{doc.font}' can't be embedded in the Word file; "
                             "devices without it will show a substitute font")
+
+
+def _detected_font(doc: Document, pdf_fonts: dict[str, int]) -> str:
+    if pdf_fonts:
+        fam: dict[str, int] = {}
+        for name, n in pdf_fonts.items():
+            f = fontembed.from_pdf_font(name)
+            fam[f] = fam.get(f, 0) + n
+        return max(fam, key=fam.get)
+    return fontembed.DEFAULT
 
 
 def convert(pdf_path: str, opts: Options | None = None, progress: Progress = lambda f, m: None):
